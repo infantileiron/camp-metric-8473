@@ -6,7 +6,7 @@
 
 启航训练营经营分析组服务四个线上/线下班级，每天收到班主任的 `启航_班级日报_20261115.xlsx`。原流程由分析员在工作簿计算实到率、结课达成率、退款占比，再把数字抄入经营会纪要。痛点是分子分母的过滤范围不一致、修改公式后旧结论失去依据、数据更正与口径变化无法分清。本项目接收上游班级日事实，替代口径登记/试算/差异解释，给下游经营负责人提供冻结依据。
 
-三个业务实体：指标定义Metric（代码+版本唯一）、班级日事实Fact（班级+日期唯一）、试算签核快照Snapshot。四页是口径目录、事实校验、口径试算和签核历史；另有登录。后台worker真实计算，签核锁定口径与意见，后续事实修改不改变历史快照。
+三个业务实体：指标定义Metric（代码+版本唯一）、班级日事实Fact（班级+日期唯一）、试算签核快照Snapshot；持续跟踪另有三张表：跟踪台账Tracker（快照唯一）、事实变更流水FactEvent、行级贡献TrackerContrib。五页是口径目录、事实校验、口径试算、签核历史和持续跟踪；另有登录。后台worker真实计算，签核锁定口径与意见，后续事实修改不改变历史快照。
 
 |角色|权限|典型动作|
 |---|---|---|
@@ -35,6 +35,8 @@ docker compose exec -T backend python -m scripts.seed_demo
 6. 09:40 新建v2试算，选择v1成功快照作为基线，核对比值差异、变更字段、日期窗和事实checksum。
 7. 10:00 在签核历史填写不少于8字的解释，说明是否同时存在事实变化。
 8. 10:10 admin签核；该版本不可覆盖。10:20 viewer下载 `camp-metric-<id>.json`。
+9. 10:30 analyst在签核历史对该快照开启持续跟踪，后台按签核日期窗与冻结口径建账。
+10. 10:40 在持续跟踪页确认已追平，核对当前分子/分母/比值与签核值的差额及班级明细；10:50 修订一条事实后刷新，观察积压清零与差额变化。
 
 ## 指标计算与安全白名单
 
@@ -46,19 +48,27 @@ docker compose exec -T backend python -m scripts.seed_demo
 
 签核需要已成功、非undefined、业务解释至少8字且口径仍与试算一致；试算后修订口径必须重算。签核后锁定口径版本和意见，事实更正不改旧快照。已有冻结版本可再次以新事实试算，但仍保留各次输入。
 
+## 签核快照持续跟踪
+
+经营会沿用已签核数字，事实更正后难以发现偏差。已签核快照可开启持续跟踪：台账按签核时的日期窗与冻结口径（分子/分母表达式及各自授课方式）对当前事实增量聚合，展示当前分子、分母、比值与签核值的差额及班级明细；原签核快照与导出不变，同一快照只能开启一次。
+
+事实保存与变更流水在同一事务落库（事务内outbox），写入经`pg_advisory_xact_lock`串行，保证流水号与提交可见顺序一致；保存成功但通知失败时由worker每3秒巡检补齐。首次建账全量扫描窗口内事实，再回放建账期间产生的流水，建账期间及后续并发修改不漏算；此后只处理变更行，贡献、总计与游标在同一事务提交，重复投递或中断后续跑不重复累计；同一事实的多条积压只按最新状态入账。新录入入账、日期迁出窗口核销贡献、授课方式改变按冻结过滤重算，均正确增减。
+
+追平前页面显示待更新；追平后当前总计与班级明细同时可见。行级表达式失败（如行内除零）保留上次完整结果，台账置为行级失败并指出班级与日期，修正事实产生新流水后自动恢复重算。
+
 ## 工程、本地开发与范围
 
 |层|技术|
 |---|---|
 |前端|原生ES modules/HTML/CSS，Nginx1.27|
 |后端|Python3.11/FastAPI/SQLAlchemy/PyJWT|
-|异步|Redis7队列，独立Python worker，心跳健康检查|
+|异步|Redis7队列，独立Python worker，心跳健康检查，兼跑试算与跟踪巡检|
 |数据库|PostgreSQL16，命名数据卷|
 
 backend等待db/redis健康，worker再等backend，frontend等backend；恰好五服务。数据库、Redis及共享`/artifacts`结果卷持久化。Nginx `/api/`代理到后端根路由。清理用 `docker compose down -v --remove-orphans`。显式网络10.253.111.0/24规避当前机器默认地址池耗尽，可用NETWORK_SUBNET改。
 
-环境变量见.env.example：COMPOSE_PROJECT_NAME、FRONTEND_PORT、BACKEND_PORT、DB_PORT、DB_PASSWORD、JWT_SECRET、SEED_DEMO、NETWORK_SUBNET。演示凭据/密钥部署时替换。本地开发先起db/redis，backend安装requirements，设置DATABASE_URL/REDIS_URL/JWT_SECRET后 `uvicorn src.main:app --reload`；前端保留同源Nginx或开发代理。
+环境变量见.env.example：COMPOSE_PROJECT_NAME、FRONTEND_PORT、BACKEND_PORT、DB_PORT、DB_PASSWORD、JWT_SECRET、SEED_DEMO、NETWORK_SUBNET。演示凭据/密钥部署时替换。本地开发先起db/redis，backend安装requirements，设置DATABASE_URL/REDIS_URL/JWT_SECRET后 `uvicorn src.main:app --reload`；worker另需可写的ARTIFACTS_DIR（默认/artifacts）。前端保留同源Nginx或开发代理。
 
-目录按backend/src的routes/controllers/services/models/schemas/middlewares/config/utils及frontend/src的api/stores/pages/components/hooks/utils/constants/types/router拆分。共享表格、字段、状态标签；表单hooks与HTML转义；请求ID/安全头中间件、业务审计和全局错误处理。枚举ROLES/STATES/MODES/APPROVALS/FIELDS位于后端constants/enums.py、schemas/business.py和前端constants/enums.js。ORM建初表，migrations/001_initial.sql保留实际DDL；无在线版本迁移执行器。
+目录按backend/src的routes/controllers/services/models/schemas/middlewares/config/utils及frontend/src的api/stores/pages/components/hooks/utils/constants/types/router拆分。共享表格、字段、状态标签；表单hooks与HTML转义；请求ID/安全头中间件、业务审计和全局错误处理。枚举ROLES/STATES/MODES/APPROVALS/TRACKING/FIELDS位于后端constants/enums.py、schemas/business.py和前端constants/enums.js。ORM建初表，migrations/001_initial.sql与002_tracking.sql保留实际DDL；无在线版本迁移执行器。
 
 小型范围：逐条表单/API录入，无Excel批导、删除、分页或跨指标引用；单worker，启动恢复待处理任务。班级日事实是人次，不能解释为去重学员留存。签核只在站内，不外发邮件/电子签章。Google Fonts依赖网络，离线回退serif/sans-serif。测试证据在 `../../test-artifacts/gb-3111/TESTING.md`，源码无截图/日志。MIT License见LICENSE。

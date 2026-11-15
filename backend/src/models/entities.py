@@ -15,3 +15,12 @@ class Snapshot(Base):
 class Audit(Base):
  __tablename__='audits'
  id=Column(Integer,primary_key=True);actor=Column(String(100));action=Column(String(200));created=Column(String(40))
+class FactEvent(Base):
+ __tablename__='fact_events'
+ id=Column(Integer,primary_key=True);fact_id=Column(Integer,nullable=False);op=Column(String(10),nullable=False,default='upsert');before=Column(JSON,nullable=True);after=Column(JSON,nullable=False);created=Column(String(40))
+class Tracker(Base):
+ __tablename__='trackers'
+ id=Column(Integer,primary_key=True);snapshot_id=Column(Integer,ForeignKey('snapshots.id'),unique=True,nullable=False);state=Column(String(20),default='building');date_from=Column(String(10));date_to=Column(String(10));metric=Column(JSON);signed=Column(JSON);numerator=Column(Float,default=0.0);denominator=Column(Float,default=0.0);value=Column(Float,nullable=True);groups=Column(JSON,default=list);applied_event_id=Column(Integer,default=0);error=Column(Text,default='');updated=Column(String(40))
+class TrackerContrib(Base):
+ __tablename__='tracker_contribs';__table_args__=(UniqueConstraint('tracker_id','fact_id'),)
+ id=Column(Integer,primary_key=True);tracker_id=Column(Integer,ForeignKey('trackers.id'),nullable=False);fact_id=Column(Integer,nullable=False);class_code=Column(String(50));day=Column(String(10));n=Column(Float,default=0.0);d=Column(Float,default=0.0)
